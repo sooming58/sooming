@@ -100,58 +100,42 @@ MEDIA_STREAM_CONSTRAINTS = {
 # 오디오 프레임 버퍼 클래스
 class AudioFrameBuffer:
     def __init__(self):
-        self.sample_rate = 16000
-        self.channels = 1
-        self._frames = []
+        self._audio_segments = []  # pydub AudioSegment 리스트로 직접 저장
 
     def append(self, frame: av.AudioFrame):
-        audio = frame.to_ndarray()
-        # audio shape: (channels, samples)
-        audio = audio.astype(np.float32)
-        self.sample_rate = frame.sample_rate
-        self.channels = audio.shape[0]
-        self._frames.append(audio)
+        """오디오 프레임을 직접 pydub AudioSegment로 변환하여 저장 (원본 그대로 유지)"""
+        # WebRTC 오디오 프레임을 직접 pydub AudioSegment로 변환
+        # 이 방식이 원본 샘플 레이트와 속도를 정확히 유지합니다
+        sound = pydub.AudioSegment(
+            data=frame.to_ndarray().tobytes(),
+            sample_width=frame.format.bytes,
+            frame_rate=frame.sample_rate,  # 원본 샘플 레이트 사용
+            channels=len(frame.layout.channels),
+        )
+        self._audio_segments.append(sound)
 
     def clear(self):
-        self._frames.clear()
+        self._audio_segments.clear()
 
     def to_pydub_audiosegment(self):
-        """pydub AudioSegment로 변환"""
-        if not self._frames:
+        """모든 오디오 세그먼트를 합쳐서 하나의 AudioSegment로 반환"""
+        if not self._audio_segments:
             return pydub.AudioSegment.empty()
         
-        audio = np.concatenate(self._frames, axis=1)
-        # 모노 변환 (평균)
-        if self.channels > 1:
-            mono = audio.mean(axis=0)
-        else:
-            mono = audio[0] if len(audio.shape) > 0 else audio
-        
-        # float32에서 int16으로 변환 (범위: -1.0 ~ 1.0 -> -32768 ~ 32767)
-        # 최대값 기준으로 정규화
-        max_val = np.abs(mono).max()
-        if max_val > 0:
-            mono = mono / max_val  # -1.0 ~ 1.0으로 정규화
-        
-        # int16 범위로 스케일링
-        int16_audio = (mono * 32767).astype(np.int16)
-        
-        # pydub AudioSegment 생성
-        audio_segment = pydub.AudioSegment(
-            int16_audio.tobytes(),
-            frame_rate=self.sample_rate,
-            sample_width=2,  # int16 = 2 bytes
-            channels=1
-        )
-        return audio_segment
+        # 모든 세그먼트를 연결 (원본 속도와 샘플 레이트 유지)
+        result = self._audio_segments[0]
+        for segment in self._audio_segments[1:]:
+            result += segment
+        return result
 
     def to_wav_file(self, wavpath):
-        """WAV 파일로 저장"""
-        if not self._frames:
+        """WAV 파일로 저장 - 원본 샘플 레이트와 속도 유지"""
+        if not self._audio_segments:
             return False
         
         audio_segment = self.to_pydub_audiosegment()
         if len(audio_segment) > 0:
+            # 원본 그대로 저장 (피치나 속도 변경 없음)
             audio_segment.export(wavpath, format="wav")
             return True
         return False
@@ -181,7 +165,7 @@ def save_frames_from_audio_receiver(wavpath):
     )
 
     # 녹음이 끝나면 버퍼를 WAV로 저장
-    if webrtc_ctx.state.playing is False and len(buffer._frames) > 0:
+    if webrtc_ctx.state.playing is False and len(buffer._audio_segments) > 0:
         if buffer.to_wav_file(wavpath):
             buffer.clear()
             st.success("녹음이 완료되었습니다.")
@@ -999,13 +983,13 @@ st.info("💡 마이크 버튼을 클릭하여 녹음을 시작하세요. 녹음
 # 녹음 상태 표시
 if "audio_buffer_obj" in st.session_state:
     buffer = st.session_state["audio_buffer_obj"]
-    if len(buffer._frames) > 0:
-        frame_count = len(buffer._frames)
-        if buffer.sample_rate > 0:
-            # 대략적인 녹음 시간 계산 (프레임당 샘플 수 추정)
-            estimated_samples = sum(f.shape[1] for f in buffer._frames if len(f.shape) > 1)
-            estimated_seconds = estimated_samples / buffer.sample_rate if buffer.sample_rate > 0 else 0
-            st.caption(f"🎤 녹음 중... 프레임: {frame_count}, 예상 시간: {estimated_seconds:.1f}초")
+    if len(buffer._audio_segments) > 0:
+        segment_count = len(buffer._audio_segments)
+        # AudioSegment의 총 길이로 녹음 시간 계산
+        total_audio = buffer.to_pydub_audiosegment()
+        if len(total_audio) > 0:
+            duration_seconds = len(total_audio) / 1000.0  # pydub은 밀리초 단위
+            st.caption(f"🎤 녹음 중... 세그먼트: {segment_count}, 녹음 시간: {duration_seconds:.1f}초")
 
 save_frames_from_audio_receiver(wavpath)
 
@@ -1170,12 +1154,13 @@ else:
         # 녹음 상태 표시
         if "signature_audio_buffer_obj" in st.session_state:
             buffer = st.session_state["signature_audio_buffer_obj"]
-            if len(buffer._frames) > 0:
-                frame_count = len(buffer._frames)
-                if buffer.sample_rate > 0:
-                    estimated_samples = sum(f.shape[1] for f in buffer._frames if len(f.shape) > 1)
-                    estimated_seconds = estimated_samples / buffer.sample_rate if buffer.sample_rate > 0 else 0
-                    st.caption(f"🎤 음성 서명 녹음 중... 프레임: {frame_count}, 예상 시간: {estimated_seconds:.1f}초")
+            if len(buffer._audio_segments) > 0:
+                segment_count = len(buffer._audio_segments)
+                # AudioSegment의 총 길이로 녹음 시간 계산
+                total_audio = buffer.to_pydub_audiosegment()
+                if len(total_audio) > 0:
+                    duration_seconds = len(total_audio) / 1000.0  # pydub은 밀리초 단위
+                    st.caption(f"🎤 음성 서명 녹음 중... 세그먼트: {segment_count}, 녹음 시간: {duration_seconds:.1f}초")
         
         # 음성 서명용 별도 녹음 (기존 녹음과 분리)
         def save_signature_audio(wavpath):
@@ -1193,7 +1178,7 @@ else:
             )
 
             # 녹음이 끝나면 버퍼를 WAV로 저장
-            if webrtc_ctx.state.playing is False and len(buffer._frames) > 0:
+            if webrtc_ctx.state.playing is False and len(buffer._audio_segments) > 0:
                 if buffer.to_wav_file(wavpath):
                     buffer.clear()
                     st.success("음성 서명 녹음이 완료되었습니다.")
@@ -1310,3 +1295,4 @@ else:
                     st.error(f"음성 서명 생성 중 오류: {str(e)}")
                     import traceback
                     st.code(traceback.format_exc())
+
