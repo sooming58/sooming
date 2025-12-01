@@ -1033,18 +1033,30 @@ input_text = st.text_area("📝 음성 입력 결과 붙여넣기 또는 직접 
 
 # 개인정보 추출 버튼
 if st.button("🔍 개인정보 추출하기", type="primary", use_container_width=True):
-    if not input_text:
-        st.warning("⚠️ 텍스트를 입력해주세요.")
+    voice_text = st.session_state.get("voice_text", "")
+    
+    # 텍스트 결합: voice_text와 input_text를 합침 (둘 다 있으면 공백으로 구분)
+    combined_text = ""
+    if voice_text and input_text:
+        combined_text = f"{voice_text} {input_text}"
+    elif voice_text:
+        combined_text = voice_text
+    elif input_text:
+        combined_text = input_text
+    
+    if not combined_text:
+        st.warning("⚠️ 텍스트를 입력하거나 음성을 변환해주세요.")
+    
     else:
         with st.spinner("개인정보 추출 중..."):
             try:
-                personal_info = extract_personal_info(input_text)
+                personal_info = extract_personal_info(combined_text)
                 st.session_state.personal_info = personal_info
-                st.session_state.plain_text = input_text
+                st.session_state.plain_text = combined_text
                 
                 # 자동 암호화
                 cipher = Fernet(st.session_state.system_key)
-                encrypted_bytes = cipher.encrypt(input_text.encode())
+                encrypted_bytes = cipher.encrypt(combined_text.encode())
                 st.session_state.encrypted_text = encrypted_bytes.decode()
                 
                 st.success("✅ 개인정보 추출 완료!")
@@ -1295,4 +1307,5 @@ else:
                     st.error(f"음성 서명 생성 중 오류: {str(e)}")
                     import traceback
                     st.code(traceback.format_exc())
+
 
