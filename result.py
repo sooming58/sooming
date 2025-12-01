@@ -423,19 +423,39 @@ def calculate_text_similarity(text1, text2):
     similarity = SequenceMatcher(None, text1_normalized, text2_normalized).ratio()
     return similarity
 
-def verify_consent_phrase(audio_filepath, target_phrase="본인은 상기 내용을 확인하고 이에 동의합니다.", threshold=0.6):
+def check_required_keywords(text, required_keywords=["내용", "확인", "동의"]):
+    """필수 키워드가 모두 포함되어 있는지 확인합니다.
+    
+    Args:
+        text: 검증할 텍스트
+        required_keywords: 필수로 포함되어야 할 키워드 리스트
+    
+    Returns:
+        tuple: (모든 키워드 포함 여부, 누락된 키워드 리스트)
+    """
+    text_lower = text.lower()
+    missing_keywords = []
+    
+    for keyword in required_keywords:
+        if keyword.lower() not in text_lower:
+            missing_keywords.append(keyword)
+    
+    all_present = len(missing_keywords) == 0
+    return all_present, missing_keywords
+
+def verify_consent_phrase(audio_filepath, target_phrase="본인은 상기 내용을 확인하고 이에 동의합니다.", threshold=0.8):
     """음성 파일을 텍스트로 변환하고 동의 문구와의 유사도를 검증합니다.
     
     Args:
         audio_filepath: 검증할 오디오 파일 경로
         target_phrase: 목표 동의 문구
-        threshold: 최소 유사도 임계값 (기본값: 0.6 = 60%)
+        threshold: 최소 유사도 임계값 (기본값: 0.8 = 80%)
     
     Returns:
-        tuple: (유사도, 변환된 텍스트, 검증 통과 여부)
+        tuple: (유사도, 변환된 텍스트, 검증 통과 여부, 키워드 검증 결과, 누락된 키워드)
     """
     if not os.path.exists(audio_filepath):
-        return None, None, False
+        return None, None, False, False, []
     
     try:
         # Whisper로 음성을 텍스트로 변환
@@ -448,13 +468,19 @@ def verify_consent_phrase(audio_filepath, target_phrase="본인은 상기 내용
         # 유사도 계산
         similarity = calculate_text_similarity(transcribed_text, target_phrase)
         
-        # 임계값 이상이면 통과
-        is_valid = similarity >= threshold
+        # 필수 키워드 검증: "내용", "확인", "동의"
+        keywords_present, missing_keywords = check_required_keywords(
+            transcribed_text, 
+            required_keywords=["내용", "확인", "동의"]
+        )
         
-        return similarity, transcribed_text, is_valid
+        # 유사도와 키워드 검증 모두 통과해야 함
+        is_valid = (similarity >= threshold) and keywords_present
+        
+        return similarity, transcribed_text, is_valid, keywords_present, missing_keywords
     except Exception as e:
         st.error(f"음성 검증 중 오류: {str(e)}")
-        return None, None, False
+        return None, None, False, False, []
 
 def create_voice_signature(document_content, pdf_filepath, audio_filepath='recorded_audio.wav'):
     """음성 서명 데이터를 생성합니다."""
@@ -1204,19 +1230,27 @@ else:
             if st.button("✅ 음성 서명 생성", type="primary"):
                 # 음성 서명 검증: 동의 문구 확인
                 target_phrase = "본인은 상기 내용을 확인하고 이에 동의합니다."
-                with st.spinner("음성 서명 검증 중... (동의 문구 확인)"):
-                    similarity, transcribed_text, is_valid = verify_consent_phrase(
+                with st.spinner("음성 서명 검증 중... (동의 문구 및 필수 키워드 확인)"):
+                    similarity, transcribed_text, is_valid, keywords_present, missing_keywords = verify_consent_phrase(
+
                         signature_wavpath, 
                         target_phrase=target_phrase, 
-                        threshold=0.6
+                        threshold=0.8
                     )
                 
                 if not is_valid:
                     st.error(f"❌ 동의 문구가 확인되지 않았습니다.")
                     if transcribed_text:
                         st.warning(f"**인식된 텍스트:** {transcribed_text}")
-                        if similarity is not None:
-                            st.warning(f"**유사도:** {similarity*100:.1f}% (필요: 60% 이상)")
+                        
+                        # 유사도 검증 실패
+                        if similarity is not None and similarity < 0.8:
+                            st.warning(f"**유사도:** {similarity*100:.1f}% (필요: 80% 이상)")
+                        # 키워드 검증 실패
+                        if not keywords_present:
+                            st.warning(f"**누락된 필수 키워드:** {', '.join(missing_keywords)}")
+                            st.info("💡 다음 키워드가 모두 포함되어야 합니다: '내용', '확인', '동의'")
+
                         st.info(f"💡 다음 문구를 정확히 말씀해주세요: \"{target_phrase}\"")
                     else:
                         st.warning("음성을 텍스트로 변환할 수 없습니다. 다시 녹음해주세요.")
@@ -1224,7 +1258,7 @@ else:
                 
                 # 검증 통과
                 if similarity is not None:
-                    st.success(f"✅ 동의 문구 확인 완료! (유사도: {similarity*100:.1f}%)")
+                    st.success(f"✅ 동의 문구 확인 완료! (유사도: {similarity*100:.1f}%, 필수 키워드 모두 포함)")
                     if transcribed_text:
                         st.caption(f"인식된 텍스트: \"{transcribed_text}\"")
                 
@@ -1307,5 +1341,6 @@ else:
                     st.error(f"음성 서명 생성 중 오류: {str(e)}")
                     import traceback
                     st.code(traceback.format_exc())
+
 
 
