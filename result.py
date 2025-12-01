@@ -18,6 +18,7 @@ import json
 import re
 from datetime import datetime
 from gtts import gTTS
+from difflib import SequenceMatcher
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, WebRtcStreamerContext
 from aiortc.contrib.media import MediaRecorder
 import soundfile as sf
@@ -99,45 +100,62 @@ MEDIA_STREAM_CONSTRAINTS = {
 # 오디오 프레임 버퍼 클래스
 class AudioFrameBuffer:
     def __init__(self):
-        self._audio_segments = []  # pydub AudioSegment 리스트로 직접 저장
+        self.sample_rate = 16000
+        self.channels = 1
+        self._frames = []
 
     def append(self, frame: av.AudioFrame):
-        """오디오 프레임을 직접 pydub AudioSegment로 변환하여 저장 (원본 그대로 유지)"""
-        # WebRTC 오디오 프레임을 직접 pydub AudioSegment로 변환
-        # 이 방식이 원본 샘플 레이트와 속도를 정확히 유지합니다
-        sound = pydub.AudioSegment(
-            data=frame.to_ndarray().tobytes(),
-            sample_width=frame.format.bytes,
-            frame_rate=frame.sample_rate,  # 원본 샘플 레이트 사용
-            channels=len(frame.layout.channels),
-        )
-        self._audio_segments.append(sound)
+        audio = frame.to_ndarray()
+        # audio shape: (channels, samples)
+        audio = audio.astype(np.float32)
+        self.sample_rate = frame.sample_rate
+        self.channels = audio.shape[0]
+        self._frames.append(audio)
 
     def clear(self):
-        self._audio_segments.clear()
+        self._frames.clear()
 
     def to_pydub_audiosegment(self):
-        """모든 오디오 세그먼트를 합쳐서 하나의 AudioSegment로 반환"""
-        if not self._audio_segments:
+        """pydub AudioSegment로 변환"""
+        if not self._frames:
             return pydub.AudioSegment.empty()
         
-        # 모든 세그먼트를 연결 (원본 속도와 샘플 레이트 유지)
-        result = self._audio_segments[0]
-        for segment in self._audio_segments[1:]:
-            result += segment
-        return result
+        audio = np.concatenate(self._frames, axis=1)
+        # 모노 변환 (평균)
+        if self.channels > 1:
+            mono = audio.mean(axis=0)
+        else:
+            mono = audio[0] if len(audio.shape) > 0 else audio
+        
+        # float32에서 int16으로 변환 (범위: -1.0 ~ 1.0 -> -32768 ~ 32767)
+        # 최대값 기준으로 정규화
+        max_val = np.abs(mono).max()
+        if max_val > 0:
+            mono = mono / max_val  # -1.0 ~ 1.0으로 정규화
+        
+        # int16 범위로 스케일링
+        int16_audio = (mono * 32767).astype(np.int16)
+        
+        # pydub AudioSegment 생성
+        audio_segment = pydub.AudioSegment(
+            int16_audio.tobytes(),
+            frame_rate=self.sample_rate,
+            sample_width=2,  # int16 = 2 bytes
+            channels=1
+        )
+        return audio_segment
 
     def to_wav_file(self, wavpath):
-        """WAV 파일로 저장 - 원본 샘플 레이트와 속도 유지"""
-        if not self._audio_segments:
+        """WAV 파일로 저장"""
+        if not self._frames:
             return False
         
         audio_segment = self.to_pydub_audiosegment()
         if len(audio_segment) > 0:
-            # 원본 그대로 저장 (피치나 속도 변경 없음)
             audio_segment.export(wavpath, format="wav")
             return True
         return False
+
 # 오디오 프로세서 클래스
 class AudioProcessor:
     def __init__(self, buffer: AudioFrameBuffer):
@@ -163,7 +181,7 @@ def save_frames_from_audio_receiver(wavpath):
     )
 
     # 녹음이 끝나면 버퍼를 WAV로 저장
-    if webrtc_ctx.state.playing is False and len(buffer._audio_segments) > 0:
+    if webrtc_ctx.state.playing is False and len(buffer._frames) > 0:
         if buffer.to_wav_file(wavpath):
             buffer.clear()
             st.success("녹음이 완료되었습니다.")
@@ -410,6 +428,49 @@ def get_audio_file_url(audio_filepath, use_web_url=True):
     if os.path.exists(audio_filepath):
         return os.path.abspath(audio_filepath)
     return audio_filepath
+
+def calculate_text_similarity(text1, text2):
+    """두 텍스트의 유사도를 계산합니다 (0.0 ~ 1.0)."""
+    # 공백 제거 및 소문자 변환으로 정규화
+    text1_normalized = re.sub(r'\s+', '', text1.lower())
+    text2_normalized = re.sub(r'\s+', '', text2.lower())
+    
+    # SequenceMatcher를 사용한 유사도 계산
+    similarity = SequenceMatcher(None, text1_normalized, text2_normalized).ratio()
+    return similarity
+
+def verify_consent_phrase(audio_filepath, target_phrase="본인은 상기 내용을 확인하고 이에 동의합니다.", threshold=0.6):
+    """음성 파일을 텍스트로 변환하고 동의 문구와의 유사도를 검증합니다.
+    
+    Args:
+        audio_filepath: 검증할 오디오 파일 경로
+        target_phrase: 목표 동의 문구
+        threshold: 최소 유사도 임계값 (기본값: 0.6 = 60%)
+    
+    Returns:
+        tuple: (유사도, 변환된 텍스트, 검증 통과 여부)
+    """
+    if not os.path.exists(audio_filepath):
+        return None, None, False
+    
+    try:
+        # Whisper로 음성을 텍스트로 변환
+        if "whisper_model" not in st.session_state:
+            st.session_state.whisper_model = whisper.load_model("small")
+        model = st.session_state.whisper_model
+        result = model.transcribe(str(audio_filepath))
+        transcribed_text = result["text"].strip()
+        
+        # 유사도 계산
+        similarity = calculate_text_similarity(transcribed_text, target_phrase)
+        
+        # 임계값 이상이면 통과
+        is_valid = similarity >= threshold
+        
+        return similarity, transcribed_text, is_valid
+    except Exception as e:
+        st.error(f"음성 검증 중 오류: {str(e)}")
+        return None, None, False
 
 def create_voice_signature(document_content, pdf_filepath, audio_filepath='recorded_audio.wav'):
     """음성 서명 데이터를 생성합니다."""
@@ -938,13 +999,13 @@ st.info("💡 마이크 버튼을 클릭하여 녹음을 시작하세요. 녹음
 # 녹음 상태 표시
 if "audio_buffer_obj" in st.session_state:
     buffer = st.session_state["audio_buffer_obj"]
-    if len(buffer._audio_segments) > 0:
-        segment_count = len(buffer._audio_segments)
-        # AudioSegment의 총 길이로 녹음 시간 계산
-        total_audio = buffer.to_pydub_audiosegment()
-        if len(total_audio) > 0:
-            duration_seconds = len(total_audio) / 1000.0  # pydub은 밀리초 단위
-            st.caption(f"🎤 녹음 중... 세그먼트: {segment_count}, 녹음 시간: {duration_seconds:.1f}초")
+    if len(buffer._frames) > 0:
+        frame_count = len(buffer._frames)
+        if buffer.sample_rate > 0:
+            # 대략적인 녹음 시간 계산 (프레임당 샘플 수 추정)
+            estimated_samples = sum(f.shape[1] for f in buffer._frames if len(f.shape) > 1)
+            estimated_seconds = estimated_samples / buffer.sample_rate if buffer.sample_rate > 0 else 0
+            st.caption(f"🎤 녹음 중... 프레임: {frame_count}, 예상 시간: {estimated_seconds:.1f}초")
 
 save_frames_from_audio_receiver(wavpath)
 
@@ -1109,13 +1170,13 @@ else:
         # 녹음 상태 표시
         if "signature_audio_buffer_obj" in st.session_state:
             buffer = st.session_state["signature_audio_buffer_obj"]
-            if len(buffer._audio_segments) > 0:
-                segment_count = len(buffer._audio_segments)
-                # AudioSegment의 총 길이로 녹음 시간 계산
-                total_audio = buffer.to_pydub_audiosegment()
-                if len(total_audio) > 0:
-                    duration_seconds = len(total_audio) / 1000.0  # pydub은 밀리초 단위
-                    st.caption(f"🎤 음성 서명 녹음 중... 세그먼트: {segment_count}, 녹음 시간: {duration_seconds:.1f}초")
+            if len(buffer._frames) > 0:
+                frame_count = len(buffer._frames)
+                if buffer.sample_rate > 0:
+                    estimated_samples = sum(f.shape[1] for f in buffer._frames if len(f.shape) > 1)
+                    estimated_seconds = estimated_samples / buffer.sample_rate if buffer.sample_rate > 0 else 0
+                    st.caption(f"🎤 음성 서명 녹음 중... 프레임: {frame_count}, 예상 시간: {estimated_seconds:.1f}초")
+        
         # 음성 서명용 별도 녹음 (기존 녹음과 분리)
         def save_signature_audio(wavpath):
             # 세션 상태 초기화
@@ -1132,7 +1193,7 @@ else:
             )
 
             # 녹음이 끝나면 버퍼를 WAV로 저장
-            if webrtc_ctx.state.playing is False and len(buffer._audio_segments) > 0:
+            if webrtc_ctx.state.playing is False and len(buffer._frames) > 0:
                 if buffer.to_wav_file(wavpath):
                     buffer.clear()
                     st.success("음성 서명 녹음이 완료되었습니다.")
@@ -1144,6 +1205,32 @@ else:
             display_wavfile(signature_wavpath)
             
             if st.button("✅ 음성 서명 생성", type="primary"):
+                # 음성 서명 검증: 동의 문구 확인
+                target_phrase = "본인은 상기 내용을 확인하고 이에 동의합니다."
+                with st.spinner("음성 서명 검증 중... (동의 문구 확인)"):
+                    similarity, transcribed_text, is_valid = verify_consent_phrase(
+                        signature_wavpath, 
+                        target_phrase=target_phrase, 
+                        threshold=0.6
+                    )
+                
+                if not is_valid:
+                    st.error(f"❌ 동의 문구가 확인되지 않았습니다.")
+                    if transcribed_text:
+                        st.warning(f"**인식된 텍스트:** {transcribed_text}")
+                        if similarity is not None:
+                            st.warning(f"**유사도:** {similarity*100:.1f}% (필요: 60% 이상)")
+                        st.info(f"💡 다음 문구를 정확히 말씀해주세요: \"{target_phrase}\"")
+                    else:
+                        st.warning("음성을 텍스트로 변환할 수 없습니다. 다시 녹음해주세요.")
+                    st.stop()  # 검증 실패 시 진행 중단
+                
+                # 검증 통과
+                if similarity is not None:
+                    st.success(f"✅ 동의 문구 확인 완료! (유사도: {similarity*100:.1f}%)")
+                    if transcribed_text:
+                        st.caption(f"인식된 텍스트: \"{transcribed_text}\"")
+                
                 if not st.session_state.pdf_filepath:
                     # 임시로 PDF 파일 생성
                     if not os.path.exists("documents"):
@@ -1223,4 +1310,3 @@ else:
                     st.error(f"음성 서명 생성 중 오류: {str(e)}")
                     import traceback
                     st.code(traceback.format_exc())
-
