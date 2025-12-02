@@ -1058,7 +1058,7 @@ else:
     st.text_area("Recognized text (from voice)", value="", key="voice_text", height=140, label_visibility="collapsed",
                  help="위의 녹음 후 'Whisper로 텍스트 변환' 버튼을 누르거나 직접 입력하세요.")
 
-input_text = st.text_area("📝 음성 입력 결과 붙여넣기 또는 직접 입력:", height=100, help="입력 후 '개인정보 추출' 버튼을 눌러주세요.")
+input_text = st.text_area("📝 텍스트 직접 입력:", height=100, help="입력 후 '개인정보 추출' 버튼을 눌러주세요.")
 
 # 개인정보 추출 버튼
 if st.button("🔍 개인정보 추출하기", type="primary", use_container_width=True):
@@ -1344,5 +1344,6 @@ else:
                     st.error(f"음성 서명 생성 중 오류: {str(e)}")
                     import traceback
                     st.code(traceback.format_exc())
+
 
 
