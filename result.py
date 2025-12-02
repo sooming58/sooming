@@ -986,27 +986,93 @@ if st.button("🔊 1단계 안내 듣기"):
 
 template_options = {
     "선택": {
-        "guide": "[📢입력 가이드]\n\n작성할 서류 종류를 선택해주세요."
+        "guide": "[📢입력 가이드]\n\n작성할 서류 종류를 선택해주세요.",
+        "tts_message": None
     },
     "근로계약서": {
-        "guide": "[📢입력 가이드]\n\n이 서류는 '이름', '근무지', '시급', '근무시간' 순서로 말씀해 주세요.\n\n예시: 홍길동, XX수학 학원, 시급 만원, 아침 9시부터 6시까지"
+        "guide": "[📢입력 가이드]\n\n이 서류는 '이름', '근무지', '시급', '근무시간' 순서로 말씀해 주세요.\n\n예시: 홍길동, XX수학 학원, 시급 만원, 아침 9시부터 6시까지",
+        "tts_message": "근로계약서를 선택하였습니다. 이름, 근무지, 시급, 근무시간 등을 말씀해주세요."
     },
     "주민등록등본 신청서": {
-        "guide": "[📢입력 가이드]\n\n이 서류는 '성명', '거주지 주소', '주민등록번호' 순서로 말씀해 주세요.\n\n예시: 오지헌, 대구 북구, 950101-1234567"
+        "guide": "[📢입력 가이드]\n\n이 서류는 '성명', '거주지 주소', '주민등록번호' 순서로 말씀해 주세요.\n\n예시: 오지헌, 대구 북구, 950101-1234567",
+        "tts_message": "주민등록등본 신청서를 선택하였습니다. 성명, 거주지 주소, 주민등록번호 등을 말씀해주세요."
     },
     "개인정보 제공 동의서": {
-        "guide": "[📢입력 가이드]\n\n이 서류는 '성명', '생년월일', '주소', '연락처' 순서로 말씀해 주세요.\n\n예시: 홍길동, 1990년 1월 1일, 서울시 강남구, 010-1234-5678"
+        "guide": "[📢입력 가이드]\n\n이 서류는 '성명', '생년월일', '주소', '연락처' 순서로 말씀해 주세요.\n\n예시: 홍길동, 1990년 1월 1일, 서울시 강남구, 010-1234-5678",
+        "tts_message": "개인정보 제공 동의서를 선택하였습니다. 성명, 생년월일, 주소, 연락처 등을 말씀해주세요."
     }
 }
 
+# 이전 선택값 저장을 위한 세션 상태 초기화
+if "previous_template" not in st.session_state:
+    st.session_state.previous_template = "선택"
+
 selected_template = st.selectbox("작성할 서류 종류를 선택하세요.", list(template_options.keys()))
+
+# 템플릿이 변경되었을 때 음성 안내 재생
+if selected_template != st.session_state.previous_template and selected_template != "선택":
+    if template_options[selected_template]["tts_message"]:
+        tts_play(template_options[selected_template]["tts_message"])
+    st.session_state.previous_template = selected_template
+elif selected_template == st.session_state.previous_template:
+    # 같은 템플릿이 선택된 경우는 업데이트만
+    pass
+else:
+    # "선택"으로 돌아간 경우
+    st.session_state.previous_template = selected_template
+
 st.markdown(f"""<div class="guide-box">{template_options[selected_template]['guide']}</div>""", unsafe_allow_html=True)
 
 # [2단계] 개인정보 음성 입력
 st.markdown("---")
 st.header("[2단계] 개인정보 음성 입력")
 
-st.markdown("### 오디오 녹음")
+if st.button("🔊 2단계 안내 듣기"):
+    tts_play("2단계입니다. 음성 파일을 업로드나 음성 녹음, 텍스트를 입력 해주세요")
+
+# 음성 파일 업로드 옵션
+st.markdown("### 음성 파일 업로드")
+uploaded_file = st.file_uploader(
+    "음성 파일을 업로드하세요 (WAV, MP3, M4A 등 지원)",
+    type=['wav', 'mp3', 'm4a', 'ogg', 'flac'],
+    help="기존에 녹음된 음성 파일을 업로드할 수 있습니다."
+)
+
+if uploaded_file is not None:
+    try:
+        # 업로드된 파일을 임시로 저장
+        cur_time = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
+        file_extension = Path(uploaded_file.name).suffix.lower()
+        
+        # 업로드된 파일을 pydub로 로드하여 WAV로 변환
+        audio_data = uploaded_file.read()
+        temp_input = BytesIO(audio_data)
+        
+        # pydub로 오디오 로드
+        audio_segment = pydub.AudioSegment.from_file(temp_input, format=file_extension[1:])
+        
+        # WAV로 변환하여 저장
+        uploaded_wavpath = str(TMP_DIR / f"uploaded_{cur_time}.wav")
+        audio_segment.export(uploaded_wavpath, format="wav")
+        
+        # 세션 상태에 업로드된 파일 경로 저장
+        st.session_state["uploaded_wavpath"] = uploaded_wavpath
+        st.session_state["wavpath"] = uploaded_wavpath
+        
+        # 기존 녹음 버퍼 초기화
+        if "audio_buffer_obj" in st.session_state:
+            st.session_state["audio_buffer_obj"].clear()
+        
+        st.success(f"✅ 파일 업로드 완료: {uploaded_file.name}")
+        st.audio(audio_data, format=f'audio/{file_extension[1:]}')
+        
+    except Exception as e:
+        st.error(f"❌ 파일 업로드 중 오류 발생: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+
+st.markdown("---")
+st.markdown("### 또는 직접 녹음하기")
 st.info("💡 마이크 버튼을 클릭하여 녹음을 시작하세요. 녹음이 끝나면 다시 버튼을 눌러 중지하세요.")
 
 # 녹음 상태 표시
@@ -1020,32 +1086,47 @@ if "audio_buffer_obj" in st.session_state:
             duration_seconds = len(total_audio) / 1000.0  # pydub은 밀리초 단위
             st.caption(f"🎤 녹음 중... 세그먼트: {segment_count}, 녹음 시간: {duration_seconds:.1f}초")
 
-save_frames_from_audio_receiver(wavpath)
+# 업로드된 파일이 없을 때만 녹음 기능 활성화
+if uploaded_file is None:
+    save_frames_from_audio_receiver(wavpath)
 
-# 녹음된 파일이 있으면 재생
-if Path(wavpath).exists():
+# 녹음된 파일 또는 업로드된 파일이 있으면 재생
+current_audio_file = None
+if "uploaded_wavpath" in st.session_state and Path(st.session_state["uploaded_wavpath"]).exists():
+    current_audio_file = st.session_state["uploaded_wavpath"]
+    st.markdown(f"**업로드된 파일:** {current_audio_file}")
+elif Path(wavpath).exists():
+    current_audio_file = wavpath
     st.markdown(f"**녹음 파일:** {wavpath}")
-    display_wavfile(wavpath)
+
+if current_audio_file and Path(current_audio_file).exists():
+    display_wavfile(current_audio_file)
+
+    if st.button("🔊 안내 듣기"):
+        tts_play("음성 파일을 텍스트로 변환 해주세요")
     
     # Whisper 변환 버튼
     col1, col2 = st.columns([1, 1])
     with col1:
-        if st.button("🎤 Whisper로 텍스트 변환", key="whisper_convert", help="녹음된 오디오를 텍스트로 변환합니다."):
+        if st.button("🎤 Whisper로 텍스트 변환", key="whisper_convert", help="오디오를 텍스트로 변환합니다."):
             with st.spinner("Whisper 모델 로딩 및 변환 중..."):
                 try:
                     if "whisper_model" not in st.session_state:
                         st.session_state.whisper_model = whisper.load_model("small")
                     model = st.session_state.whisper_model
-                    result = model.transcribe(str(wavpath))
+                    result = model.transcribe(str(current_audio_file))
                     transcribed_text = result["text"]
                     st.session_state["voice_text"] = transcribed_text
                     st.success("✅ 변환 완료")
+                    tts_play("변환이 완료되었습니다")
                 except Exception as e:
                     st.error(f"❌ 변환 중 오류 발생: {str(e)}")
     with col2:
-        if st.button("🔄 녹음 초기화", key="reset_recording", help="녹음을 초기화합니다."):
+        if st.button("🔄 오디오 초기화", key="reset_recording", help="오디오를 초기화합니다."):
             if "audio_buffer_obj" in st.session_state:
                 st.session_state["audio_buffer_obj"].clear()
+            if "uploaded_wavpath" in st.session_state:
+                del st.session_state["uploaded_wavpath"]
             cur_time = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
             st.session_state["wavpath"] = str(TMP_DIR / f"{cur_time}.wav")
             st.rerun()
@@ -1061,6 +1142,9 @@ else:
 input_text = st.text_area("📝 텍스트 직접 입력:", height=100, help="입력 후 '개인정보 추출' 버튼을 눌러주세요.")
 
 # 개인정보 추출 버튼
+if st.button("🔊 개인정보 안내 듣기"):
+    tts_play("개인정보를 추출하시려면 아래 버튼을 눌러주세요")
+
 if st.button("🔍 개인정보 추출하기", type="primary", use_container_width=True):
     voice_text = st.session_state.get("voice_text", "")
     
@@ -1090,12 +1174,19 @@ if st.button("🔍 개인정보 추출하기", type="primary", use_container_wid
                 
                 st.success("✅ 개인정보 추출 완료!")
                 st.json(personal_info)
+                tts_play("개인정보 추출이 완료되었습니다")
                 
                 # 문서 생성
                 with st.spinner("문서 내용 생성 중..."):
                     document_content = generate_document_content(personal_info, selected_template)
                     st.session_state.document_content = document_content
                     st.success("✅ 문서 내용 생성 완료!")
+                    
+                    # 문서 생성 완료 음성 안내 및 문서 내용 읽기
+                    tts_play("문서 생성이 완료되었습니다.")
+                    # 문서 내용도 음성으로 읽기
+                    if document_content:
+                        tts_play(document_content)
                     
             except Exception as e:
                 st.error(f"❌ 오류 발생: {str(e)}")
@@ -1140,6 +1231,7 @@ else:
                         pdf_bytes = f.read()
                     
                     st.success(f"✅ PDF 생성 및 저장 완료! 파일: {filepath}")
+                    tts_play("PDF 파일이 생성되었습니다.")
                     st.download_button(
                         "📥 PDF 다운로드", 
                         data=pdf_bytes, 
@@ -1160,6 +1252,7 @@ else:
                     buffer.seek(0)
 
                     st.success("✅ PDF 생성 완료!")
+                    tts_play("PDF 파일이 생성되었습니다.")
                     st.download_button(
                         "📥 PDF 다운로드", 
                         data=buffer.getvalue(), 
@@ -1178,11 +1271,56 @@ else:
     # ==========================================
     st.markdown("---")
     st.header("[4단계] 음성 서명 (선택)")
+    if st.button("🔊 4단계 안내 듣기"):
+        tts_play("4단계입니다. 음성 서명을 원하실 경우 아래 체크박스를 눌러주세요")
     
     use_voice_signature = st.checkbox("🎤 음성 서명 사용하기", value=False, help="음성 서명을 PDF에 포함시킵니다.")
     
     if use_voice_signature:
-        st.markdown("### 음성 동의 녹음")
+        tts_play("본인은 상기 내용을 확인하고 이에 동의합니다. 라는 음성이 담김 파일을 업로드하거나 녹음해주세요")
+        # 음성 서명 파일 업로드 옵션
+        st.markdown("### 음성 서명 파일 업로드")
+        signature_uploaded_file = st.file_uploader(
+            "음성 서명 파일을 업로드하세요 (WAV, MP3, M4A 등 지원)",
+            type=['wav', 'mp3', 'm4a', 'ogg', 'flac'],
+            key="signature_upload",
+            help="기존에 녹음된 음성 서명 파일을 업로드할 수 있습니다."
+        )
+        
+        if signature_uploaded_file is not None:
+            try:
+                # 업로드된 파일을 임시로 저장
+                cur_time = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
+                file_extension = Path(signature_uploaded_file.name).suffix.lower()
+                
+                # 업로드된 파일을 pydub로 로드하여 WAV로 변환
+                audio_data = signature_uploaded_file.read()
+                temp_input = BytesIO(audio_data)
+                
+                # pydub로 오디오 로드
+                audio_segment = pydub.AudioSegment.from_file(temp_input, format=file_extension[1:])
+                
+                # WAV로 변환하여 저장
+                uploaded_signature_wavpath = str(TMP_DIR / f"uploaded_signature_{cur_time}.wav")
+                audio_segment.export(uploaded_signature_wavpath, format="wav")
+                
+                # 세션 상태에 업로드된 파일 경로 저장
+                st.session_state["signature_wavpath"] = uploaded_signature_wavpath
+                
+                # 기존 녹음 버퍼 초기화
+                if "signature_audio_buffer_obj" in st.session_state:
+                    st.session_state["signature_audio_buffer_obj"].clear()
+                
+                st.success(f"✅ 음성 서명 파일 업로드 완료: {signature_uploaded_file.name}")
+                st.audio(audio_data, format=f'audio/{file_extension[1:]}')
+                
+            except Exception as e:
+                st.error(f"❌ 파일 업로드 중 오류 발생: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
+        
+        st.markdown("---")
+        st.markdown("### 또는 직접 녹음하기")
         st.info("💡 '본인은 상기 내용을 확인하고 이에 동의합니다.' 라고 말씀해주세요. 마이크 버튼을 클릭하여 녹음을 시작하세요.")
         
         # 음성 서명용 녹음 경로
@@ -1203,32 +1341,47 @@ else:
                     duration_seconds = len(total_audio) / 1000.0  # pydub은 밀리초 단위
                     st.caption(f"🎤 음성 서명 녹음 중... 세그먼트: {segment_count}, 녹음 시간: {duration_seconds:.1f}초")
         
-        # 음성 서명용 별도 녹음 (기존 녹음과 분리)
-        def save_signature_audio(wavpath):
-            # 세션 상태 초기화
-            if "signature_audio_buffer_obj" not in st.session_state:
-                st.session_state["signature_audio_buffer_obj"] = AudioFrameBuffer()
+        # 업로드된 파일이 없을 때만 녹음 기능 활성화
+        if signature_uploaded_file is None:
+            # 음성 서명용 별도 녹음 (기존 녹음과 분리)
+            def save_signature_audio(wavpath):
+                # 세션 상태 초기화
+                if "signature_audio_buffer_obj" not in st.session_state:
+                    st.session_state["signature_audio_buffer_obj"] = AudioFrameBuffer()
 
-            buffer = st.session_state["signature_audio_buffer_obj"]
+                buffer = st.session_state["signature_audio_buffer_obj"]
+                
+                webrtc_ctx = webrtc_streamer(
+                    key="signature-audio",
+                    mode=WebRtcMode.SENDONLY,
+                    media_stream_constraints=MEDIA_STREAM_CONSTRAINTS,
+                    audio_processor_factory=lambda: AudioProcessor(buffer),
+                )
+
+                # 녹음이 끝나면 버퍼를 WAV로 저장
+                if webrtc_ctx.state.playing is False and len(buffer._audio_segments) > 0:
+                    if buffer.to_wav_file(wavpath):
+                        buffer.clear()
+                        st.success("음성 서명 녹음이 완료되었습니다.")
+                        tts_play("음성 녹음이 완료되었습니다.")
             
-            webrtc_ctx = webrtc_streamer(
-                key="signature-audio",
-                mode=WebRtcMode.SENDONLY,
-                media_stream_constraints=MEDIA_STREAM_CONSTRAINTS,
-                audio_processor_factory=lambda: AudioProcessor(buffer),
-            )
-
-            # 녹음이 끝나면 버퍼를 WAV로 저장
-            if webrtc_ctx.state.playing is False and len(buffer._audio_segments) > 0:
-                if buffer.to_wav_file(wavpath):
-                    buffer.clear()
-                    st.success("음성 서명 녹음이 완료되었습니다.")
+            save_signature_audio(signature_wavpath)
         
-        save_signature_audio(signature_wavpath)
-        
+        # 음성 서명 파일이 있으면 재생
         if Path(signature_wavpath).exists():
-            st.markdown(f"**음성 서명 파일:** {signature_wavpath}")
+            if signature_uploaded_file is not None:
+                st.markdown(f"**업로드된 음성 서명 파일:** {signature_wavpath}")
+            else:
+                st.markdown(f"**음성 서명 파일:** {signature_wavpath}")
             display_wavfile(signature_wavpath)
+            
+            # 초기화 버튼
+            if st.button("🔄 음성 서명 초기화", key="reset_signature", help="음성 서명을 초기화합니다."):
+                if "signature_audio_buffer_obj" in st.session_state:
+                    st.session_state["signature_audio_buffer_obj"].clear()
+                cur_time = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
+                st.session_state["signature_wavpath"] = str(TMP_DIR / f"signature_{cur_time}.wav")
+                st.rerun()
             
             if st.button("✅ 음성 서명 생성", type="primary"):
                 # 음성 서명 검증: 동의 문구 확인
@@ -1243,6 +1396,7 @@ else:
                 
                 if not is_valid:
                     st.error(f"❌ 동의 문구가 확인되지 않았습니다.")
+                    tts_play(f"동의 문구가 확인되지 않았습니다. 현재 유사도는 {similarity*100:.1f}% 이며 80% 이상이 필요합니다. 다시 정확히 말씀해주세요")
                     if transcribed_text:
                         st.warning(f"**인식된 텍스트:** {transcribed_text}")
                         
@@ -1303,7 +1457,7 @@ else:
                     signature_file = save_voice_signature(voice_signature, output_dir="documents")
                     st.success(f"✅ 음성 서명 생성 완료! 서명 데이터: {signature_file}")
                     st.json(voice_signature)
-                    
+
                     # 음성 서명이 포함된 PDF 재생성
                     if st.session_state.pdf_filepath:
                         with st.spinner("음성 서명이 포함된 PDF 재생성 중..."):
@@ -1328,6 +1482,7 @@ else:
                                 save_voice_signature(voice_signature, output_dir="documents")
                             
                             st.success("✅ 음성 서명이 포함된 PDF가 재생성되었습니다!")
+                            tts_play("음성 서명이 포함된 PDF가 재생성되었습니다. 아래 버튼을 눌러 파일을 다운로드 하세요")
                             
                             # 재생성된 PDF 다운로드
                             with open(st.session_state.pdf_filepath, 'rb') as f:
@@ -1344,6 +1499,5 @@ else:
                     st.error(f"음성 서명 생성 중 오류: {str(e)}")
                     import traceback
                     st.code(traceback.format_exc())
-
 
 
