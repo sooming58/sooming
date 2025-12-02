@@ -985,6 +985,9 @@ if st.button("🔊 1단계 안내 듣기"):
     tts_play("1단계입니다. 작성할 서류 종류를 선택해주세요.")
 
 template_options = {
+    "선택": {
+        "guide": "[📢입력 가이드]\n\n작성할 서류 종류를 선택해주세요."
+    },
     "근로계약서": {
         "guide": "[📢입력 가이드]\n\n이 서류는 '이름', '근무지', '시급', '근무시간' 순서로 말씀해 주세요.\n\n예시: 홍길동, XX수학 학원, 시급 만원, 아침 9시부터 6시까지"
     },
@@ -1341,6 +1344,5 @@ else:
                     st.error(f"음성 서명 생성 중 오류: {str(e)}")
                     import traceback
                     st.code(traceback.format_exc())
-
 
 
